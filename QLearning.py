@@ -148,7 +148,10 @@ class QLearning:
             return False
 
         def hash(self):
-            return (self.location[0][0], self.location[0][1], self.location[1][0], self.location[1][1]) + tuple(self.board.values())
+            div = 10
+            if self.location[0][0]>=10 or self.location[0][1]>=10 or self.location[1][0]>=10 or self.location[1][1]>=10:
+                div = 100
+            return np.array([(self.location[0][0], self.location[0][1], self.location[1][0], self.location[1][1]) + tuple(self.board.values())])/div
 
     def __init__(self, cube, board):
         self.board = board.map
@@ -159,8 +162,8 @@ class QLearning:
         self.res = []
         
         self.gamma = 0.9
-        self.epsilon = 1
-        self.epsilon_decay = 0.99
+        self.epsilon = 0.5
+        self.epsilon_decay = 1
         self.epsilon_min = 0.01
         
         for i in self.button.values():
@@ -170,21 +173,24 @@ class QLearning:
                     if value == 0:
                         self.boardTemp[j] = 0
         self.model = self.__model()
+        self.target_model = self.__model()
         try:
-            self.first = False
             self.weights_model = np.load("model/model_"+NUM_TESTCASE+".npy")
-            self.decode(self.weights_model)
+            self.decode(self.weights_model, self.model)
+            self.decode(self.weights_model, self.target_model)
         except:
-            self.first = True
             pass
 
     def __model(self):
         model = Sequential()
         model.add(Input(shape = (4 + len(self.boardTemp.values()), )))
-        model.add(Dense(24, activation='relu'))
-        model.add(Dense(24, activation='relu'))
+        model.add(Dense(32, activation='elu'))
+        model.add(Dense(24, activation='swish'))
+        model.add(Dense(16, activation='elu'))
+        model.add(Dense(8, activation='swish'))
         model.add(Dense(4, activation='linear'))
-        model.compile(loss = "binary_crossentropy", optimizer = Adam(learning_rate=0.001), metrics = ["accuracy", Recall(), Precision()])
+        loss = tf.keras.losses.Huber(delta=1.0)
+        model.compile(loss = loss, optimizer = Adam(learning_rate=0.001), metrics = ["accuracy", Recall(), Precision()])
         return model
 
     def encode(self):
@@ -195,7 +201,7 @@ class QLearning:
             weights = np.append(weights,layer_weight[1])
         return np.array(weights,dtype=np.float64).flatten()
 
-    def decode(self, input):
+    def decode(self, input, output_model):
         weights = []
         chromosome = np.copy(input)
         for layer in self.model.layers:
@@ -210,14 +216,12 @@ class QLearning:
             chromosome = chromosome[weights_len+bias_len:]
             weights.append(new_weights)
             weights.append(new_bias)
-        self.model.set_weights(np.array(weights,dtype=object))
-
-    
+        output_model.set_weights(np.array(weights,dtype=object))
 
     def act(self, state):
         if random.uniform(0, 1) <= self.epsilon:
             return random.randint(0, len(state.nextStateList()) - 1)
-        return np.argmax(self.model.predict(np.array([state.hash()])))
+        return np.argmax(self.model.predict(state.hash()))
 
     def learn(self, num_episodes=1):
         for episode in range(num_episodes):
@@ -229,35 +233,31 @@ class QLearning:
                 if next_state is None:
                     next_state = state
                 if next_state.isGoalState():
-                    reward = 100
+                    reward = 5
                     done = True
                 else:
                     reward = -1
-                if self.first:
-                    target_f = np.array([(0,0,0,0)])
-                    np.put(target_f[0], action, reward)
-                    self.first = False
-                else:
-                    target = reward + self.gamma * np.amax(self.model.predict(np.array([next_state.hash()])))
-                    target_f = self.model.predict(np.array([state.hash()]))
-                    np.put(target_f[0], action, target)
-                self.model.fit(np.array([state.hash()]), target_f, epochs=1, verbose=0)
+                target = reward + self.gamma * np.amax(self.target_model.predict(next_state.hash()))
+                target_f = self.model.predict(state.hash())
+                np.put(target_f[0], action, target)
+                self.model.fit(state.hash(), target_f, epochs=1, verbose=0)
                 state = next_state
                 if done:
                     self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
             self.weights_model = self.encode()
+            self.decode(self.weights_model, self.target_model)
             np.save("model/model_"+NUM_TESTCASE+".npy", self.weights_model)
             print("Episode " + str(episode) + " end!")
         print("Training completed!")
 
     def solve(self):
-        # self.learn()
+        self.learn()
         state = self.State(deepcopy(self.boardTemp), (self.firstCube, self.secondCube), self.button)
         done = False
         loop = 0
         self.res.append([self.firstCube, self.secondCube])
         while (not done) and loop < 50:
-            q_values = self.model.predict(np.array([state.hash()]))
+            q_values = self.model.predict(state.hash())
             action = np.argmax(q_values)
             next_state = state.move(action)
             while next_state is None:

@@ -13,5 +13,5 @@ class Setting:
         self.screenWidth = int((self.boardSize+2)*self.cellWidth+(self.boardSize+1)*self.dx)
         self.screenHeight = int((self.boardSize+4)*self.dy)
         self.inputFileName = 'Input.txt'
-        self.delayTime = 100
+        self.delayTime = 1000
         self.timeLimit = 20
