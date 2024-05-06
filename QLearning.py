@@ -3,13 +3,10 @@ from copy import deepcopy
 import random
 import numpy as np
 import tensorflow as tf
-from keras.models import Sequential
-from keras.layers import Dense, Input
+from Model import LSTM_Model
+from keras.utils import pad_sequences
 from keras.optimizers import Adam
-from keras.metrics import Recall, Precision
 
-
-NUM_TESTCASE = '1' # Choose testcase to run
 
 def manhattanDistance(item1, item2):
     return abs(item1[0] - item2[0]) + abs(item1[1] - item2[1])
@@ -148,10 +145,7 @@ class QLearning:
             return False
 
         def hash(self):
-            div = 10
-            if self.location[0][0]>=10 or self.location[0][1]>=10 or self.location[1][0]>=10 or self.location[1][1]>=10:
-                div = 100
-            return np.array([(self.location[0][0], self.location[0][1], self.location[1][0], self.location[1][1]) + tuple(self.board.values())])/div
+            return pad_sequences([(self.location[0][0], self.location[0][1], self.location[1][0], self.location[1][1]) + tuple(self.board.values())], maxlen = 512, padding = 'post')
 
     def __init__(self, cube, board):
         self.board = board.map
@@ -162,8 +156,8 @@ class QLearning:
         self.res = []
         
         self.gamma = 0.9
-        self.epsilon = 0.5
-        self.epsilon_decay = 1
+        self.epsilon = 0.9
+        self.epsilon_decay = 0.9
         self.epsilon_min = 0.01
         
         for i in self.button.values():
@@ -175,55 +169,21 @@ class QLearning:
         self.model = self.__model()
         self.target_model = self.__model()
         try:
-            self.weights_model = np.load("model/model_"+NUM_TESTCASE+".npy")
-            self.decode(self.weights_model, self.model)
-            self.decode(self.weights_model, self.target_model)
+            self.model.load_weights("model/model.weights.h5")
         except:
             pass
 
     def __model(self):
-        model = Sequential()
-        model.add(Input(shape = (4 + len(self.boardTemp.values()), )))
-        model.add(Dense(32, activation='elu'))
-        model.add(Dense(24, activation='swish'))
-        model.add(Dense(16, activation='elu'))
-        model.add(Dense(8, activation='swish'))
-        model.add(Dense(4, activation='linear'))
-        loss = tf.keras.losses.Huber(delta=1.0)
-        model.compile(loss = loss, optimizer = Adam(learning_rate=0.001), metrics = ["accuracy", Recall(), Precision()])
+        model = LSTM_Model(512, 4, 256)
+        model.compile(loss='categorical_crossentropy', optimizer=Adam(learning_rate=0.0025))
         return model
-
-    def encode(self):
-        weights = []
-        for layer in self.model.layers:
-            layer_weight = layer.get_weights()
-            weights = np.append(weights,layer_weight[0])
-            weights = np.append(weights,layer_weight[1])
-        return np.array(weights,dtype=np.float64).flatten()
-
-    def decode(self, input, output_model):
-        weights = []
-        chromosome = np.copy(input)
-        for layer in self.model.layers:
-            layer_weights = layer.get_weights()
-            weights_shape = layer_weights[0].shape
-            bias_shape = layer_weights[1].shape
-            weights_len = len(layer_weights[0].flatten())
-            bias_len = len(layer_weights[1].flatten())
-            new_weights = np.reshape(chromosome[:weights_len],weights_shape)
-            new_bias = np.reshape(chromosome[weights_len:weights_len+bias_len],
-                                  bias_shape)
-            chromosome = chromosome[weights_len+bias_len:]
-            weights.append(new_weights)
-            weights.append(new_bias)
-        output_model.set_weights(np.array(weights,dtype=object))
 
     def act(self, state):
         if random.uniform(0, 1) <= self.epsilon:
             return random.randint(0, len(state.nextStateList()) - 1)
-        return np.argmax(self.model.predict(state.hash()))
+        return np.argmax(self.model.predict(state.hash(), verbose = 0))
 
-    def learn(self, num_episodes=1):
+    def learn(self, num_episodes=25):
         for episode in range(num_episodes):
             state = self.State(deepcopy(self.boardTemp), (self.firstCube, self.secondCube), self.button)
             done = False
@@ -233,20 +193,21 @@ class QLearning:
                 if next_state is None:
                     next_state = state
                 if next_state.isGoalState():
-                    reward = 5
+                    reward = 100
                     done = True
                 else:
                     reward = -1
-                target = reward + self.gamma * np.amax(self.target_model.predict(next_state.hash()))
-                target_f = self.model.predict(state.hash())
+                target = reward + self.gamma * np.amax(self.target_model.predict(next_state.hash(), verbose = 0))
+                target_f = self.model.predict(state.hash(), verbose = 0)
                 np.put(target_f[0], action, target)
+                target_f = (target_f - target_f.min())/(target_f.max() - target_f.min())
                 self.model.fit(state.hash(), target_f, epochs=1, verbose=0)
                 state = next_state
                 if done:
                     self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
-            self.weights_model = self.encode()
-            self.decode(self.weights_model, self.target_model)
-            np.save("model/model_"+NUM_TESTCASE+".npy", self.weights_model)
+            
+            self.model.save_weights("model/model.weights.h5")
+            self.target_model.load_weights("model/model.weights.h5")
             print("Episode " + str(episode) + " end!")
         print("Training completed!")
 
@@ -256,8 +217,8 @@ class QLearning:
         done = False
         loop = 0
         self.res.append([self.firstCube, self.secondCube])
-        while (not done) and loop < 50:
-            q_values = self.model.predict(state.hash())
+        while (not done) and loop < 100:
+            q_values = self.model.predict(state.hash(), verbose = 0)
             action = np.argmax(q_values)
             next_state = state.move(action)
             while next_state is None:
