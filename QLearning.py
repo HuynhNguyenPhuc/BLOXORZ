@@ -1,12 +1,24 @@
 from GameWorld import *
+
 from copy import deepcopy
 import random
 import numpy as np
-import tensorflow as tf
+from collections import deque
+from tqdm import tqdm
+
 from Model import LSTM_Model
 from keras.utils import pad_sequences
 from keras.optimizers import Adam
+import keras.backend as K
+import tensorflow as tf
 
+
+def huber_loss(y_true, y_pred, clip_delta=1.0):
+    error = y_true - y_pred
+    cond = K.abs(error) <= clip_delta
+    squared_loss = 0.5 * K.square(error)
+    quadratic_loss = 0.5 * K.square(clip_delta) + clip_delta * (K.abs(error) - clip_delta)
+    return K.mean(tf.where(cond, squared_loss, quadratic_loss))
 
 def manhattanDistance(item1, item2):
     return abs(item1[0] - item2[0]) + abs(item1[1] - item2[1])
@@ -153,12 +165,16 @@ class QLearning:
         self.secondCube = cube.secondCube
         self.button = board.buttonList
         self.boardTemp = deepcopy(self.board)
+        self.memory = deque(maxlen=10000)
         self.res = []
         
-        self.gamma = 0.9
-        self.epsilon = 0.9
-        self.epsilon_decay = 0.9
+        self.gamma = 0.95
+        self.epsilon = 1.0
+        self.epsilon_decay = 0.995
         self.epsilon_min = 0.01
+        self.lr = 0.001
+        self.reset_every = 50
+        self.n_iter = 1
         
         for i in self.button.values():
             if (i[0] != 3):
@@ -168,51 +184,86 @@ class QLearning:
                         self.boardTemp[j] = 0
         self.model = self.__model()
         self.target_model = self.__model()
+        self.target_model.set_weights(self.model.get_weights())
         try:
-            self.model.load_weights("model/model.weights.h5")
+            self.model.load_weights("model.weights.h5")
+            self.target_model.load_weights("model.weights.h5")
         except:
             pass
 
     def __model(self):
         model = LSTM_Model(512, 4, 256)
-        model.compile(loss='categorical_crossentropy', optimizer=Adam(learning_rate=0.0025))
+        model.compile(loss=huber_loss, optimizer=Adam(learning_rate=0.0025))
         return model
+    
+    def remember(self, state, action, reward, next_state, done):
+        self.memory.append((state, action, reward, next_state, done))
 
     def act(self, state):
         if random.uniform(0, 1) <= self.epsilon:
             return random.randint(0, len(state.nextStateList()) - 1)
         return np.argmax(self.model.predict(state.hash(), verbose = 0))
+    
+    def trainExperienceReplay(self, batch_size):
+        mini_batch = random.sample(self.memory, batch_size)
+        X_train, y_train = [], []
+        
+        if self.n_iter % self.reset_every == 0:
+            self.target_model.set_weights(self.model.get_weights())
 
-    def learn(self, num_episodes=25):
-        for episode in range(num_episodes):
-            state = self.State(deepcopy(self.boardTemp), (self.firstCube, self.secondCube), self.button)
-            done = False
-            while not done:
-                action = self.act(state)
-                next_state = state.move(action)
-                if next_state is None:
-                    next_state = state
-                if next_state.isGoalState():
-                    reward = 100
-                    done = True
-                else:
-                    reward = -1
-                target = reward + self.gamma * np.amax(self.target_model.predict(next_state.hash(), verbose = 0))
-                target_f = self.model.predict(state.hash(), verbose = 0)
-                np.put(target_f[0], action, target)
-                target_f = (target_f - target_f.min())/(target_f.max() - target_f.min())
-                self.model.fit(state.hash(), target_f, epochs=1, verbose=0)
-                state = next_state
-                if done:
-                    self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
-            
-            self.model.save_weights("model/model.weights.h5")
-            self.target_model.load_weights("model/model.weights.h5")
-            print("Episode " + str(episode) + " end!")
-        print("Training completed!")
+        for state, action, reward, next_state, done in mini_batch:
+            if done or next_state is None:
+                target = reward
+            else:
+                target = reward + self.gamma * self.target_model.predict(next_state.hash(), verbose = 0)[0][np.argmax(self.model.predict(next_state.hash(), verbose = 0)[0])]
+
+            q_values = self.model.predict(state.hash(), verbose = 0)
+            q_values[0][action] = target
+
+            X_train.append(state.hash()[0])
+            y_train.append(q_values[0])
+
+        loss = self.model.fit(
+            np.array(X_train), np.array(y_train),
+            epochs=1, verbose=0
+        ).history["loss"][0]
+
+        if self.epsilon > self.epsilon_min:
+            self.epsilon *= self.epsilon_decay
+
+        return loss
+
+    def learn(self, num_episodes = 100, batch_size=32):
+        avg_loss = []
+
+        episode = 0
+        with tf.device("/GPU:0"):
+            for episode in range(num_episodes):
+                state = self.State(deepcopy(self.boardTemp), (self.firstCube, self.secondCube), self.button)
+                done = False
+                while not done:
+                    action = self.act(state)
+                    next_state = state.move(action)
+                    if next_state is None:
+                        reward = -100
+                    elif next_state.isGoalState():
+                        reward = 100
+                        done = True
+                    else:
+                        reward = 1
+
+                    self.remember(state, action, reward, next_state, done)
+                    if len(self.memory) > batch_size:
+                        loss = self.trainExperienceReplay(batch_size)
+                        avg_loss.append(loss)
+                        self.n_iter += 1
+
+                    if next_state is not None:
+                        state = next_state
+
+                self.model.save_weights("model.weights.h5")
 
     def solve(self):
-        self.learn()
         state = self.State(deepcopy(self.boardTemp), (self.firstCube, self.secondCube), self.button)
         done = False
         loop = 0

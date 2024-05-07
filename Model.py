@@ -33,10 +33,10 @@ class LSTM_Model(Model):
             recurrent_initializer='glorot_uniform'
         )
         
-        self.dense = Dense(self.num_features, activation="softmax", name = 'dense')
+        self.dense = Dense(self.num_features, name = 'dense')
+        self.softmaxDense = Dense(self.num_features, activation="softmax", name = 'softmax-dense')
     
     def call(self, x):
-        x = self.normalization(x)
         x = self.embedding(x)
         x = self.lstm1(x)
         x = self.lstm2(x)
