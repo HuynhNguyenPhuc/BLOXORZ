@@ -1,6 +1,9 @@
 ﻿# Extra Assignment - BLOXORZ
 Thanks @Hieugiaosu for this game demo.
 
+## Description
+Use Deep Q-Learning to train an AI agent for solving the BLOXORZ game.
+
 ## Install the libaries
 Run this command below:
 ```
